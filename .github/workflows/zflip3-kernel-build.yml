@@ -106,6 +106,12 @@ jobs:
           echo "Cloning kernel source from $KERNEL_SOURCE..."
           git clone --depth=1 https://github.com/${{ env.KERNEL_SOURCE }}.git kernel
           cd kernel
+          
+          # Fix script permissions (Windows uploaded files lack execute permission)
+          echo "Fixing script permissions..."
+          chmod +x scripts/*.sh 2>/dev/null || true
+          chmod +x scripts/basic/fixdep 2>/dev/null || true
+          
           echo "Kernel version: $(make kernelversion)"
           echo "Files: $(find . -type f | wc -l)"
           echo "Defconfig exists: $(test -f arch/arm64/configs/${{ env.DEFCONFIG }} && echo YES || echo NO)"
