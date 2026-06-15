@@ -20,7 +20,6 @@ env:
   KERNEL_SOURCE: wwyman94/zflip3-kernel-source
   DEFCONFIG: vendor/b2q_chn_openx_defconfig
   ARCH: arm64
-  CROSS_COMPILE: aarch64-linux-gnu-
 
 jobs:
   build:
@@ -50,43 +49,62 @@ jobs:
             libncurses5-dev \
             libncursesw5-dev \
             xz-utils \
-            zstd
+            zstd \
+            clang \
+            lld \
+            llvm
 
-      - name: Setup Clang toolchain
+      - name: Setup toolchains
         run: |
-          echo "Downloading AOSP Clang..."
           mkdir -p /opt/toolchains
           cd /opt/toolchains
           
-          # Download AOSP Clang 17.0.2 (r487747c)
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz" -o clang.tar.gz
-          tar -xf clang.tar.gz
-          rm clang.tar.gz
+          # Download AOSP Clang from GitHub mirror (more reliable)
+          echo "Downloading AOSP Clang..."
+          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r487747c.git clang 2>/dev/null || \
+          curl -L "https://github.com/LineageOS/android_prebuilts_clang_kernel_linux-x86_clang-r487747c/archive/refs/heads/main.tar.gz" | tar -xz --strip-components=1 -C clang 2>/dev/null || \
+          {
+            # Fallback: use system clang
+            echo "Using system clang..."
+            mkdir -p clang/bin
+            ln -sf $(which clang) clang/bin/clang
+            ln -sf $(which clang++) clang/bin/clang++
+            ln -sf $(which llvm-ar) clang/bin/llvm-ar
+            ln -sf $(which llvm-nm) clang/bin/llvm-nm
+            ln -sf $(which llvm-strip) clang/bin/llvm-strip
+          }
           
-          CLANG_DIR=$(ls -d clang* 2>/dev/null | head -1)
-          echo "CLANG_PATH=/opt/toolchains/$CLANG_DIR/bin" >> $GITHUB_ENV
-          echo "PATH=/opt/toolchains/$CLANG_DIR/bin:$PATH" >> $GITHUB_ENV
+          CLANG_BIN="/opt/toolchains/clang/bin"
+          if [ -f "$CLANG_BIN/clang" ]; then
+            echo "CLANG_PATH=$CLANG_BIN" >> $GITHUB_ENV
+            echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
+            $CLANG_BIN/clang --version
+          else
+            echo "Using system clang"
+            echo "CLANG_PATH=/usr/bin" >> $GITHUB_ENV
+            clang --version
+          fi
           
-          clang --version
-
-      - name: Setup GCC cross-compiler
-        run: |
+          # Download AOSP GCC 4.9
           echo "Downloading AOSP GCC 4.9..."
-          mkdir -p /opt/toolchains/gcc
-          cd /opt/toolchains/gcc
+          mkdir -p gcc
+          cd gcc
           
-          # Download AOSP GCC 4.9 for aarch64
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" -o gcc-aarch64.tar.gz
-          tar -xf gcc-aarch64.tar.gz
-          rm gcc-aarch64.tar.gz
+          # Try to download from GitHub mirror
+          curl -L "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/main.tar.gz" 2>/dev/null | tar -xz --strip-components=1 || \
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" 2>/dev/null | tar -xz
           
-          # Download AOSP GCC 4.9 for arm32
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz" -o gcc-arm.tar.gz
-          tar -xf gcc-arm.tar.gz
-          rm gcc-arm.tar.gz
+          cd /opt/toolchains
           
-          echo "CROSS_COMPILE=/opt/toolchains/gcc/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
+          # Setup GCC paths
+          if [ -d "gcc/bin" ]; then
+            echo "CROSS_COMPILE=/opt/toolchains/gcc/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
+            echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
+          else
+            # Fallback to system cross compiler
+            echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
+          fi
 
       - name: Clone kernel source
         run: |
@@ -168,9 +186,17 @@ jobs:
         run: |
           cd kernel
           echo "Generating kernel config from ${{ env.DEFCONFIG }}..."
+          
+          # Determine compiler
+          if [ -f "$CLANG_PATH/clang" ]; then
+            CC="$CLANG_PATH/clang"
+          else
+            CC="clang"
+          fi
+          
           make ARCH=${{ env.ARCH }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CC=clang \
+            CC="$CC" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             vendor/b2q_chn_openx_defconfig
           
@@ -186,10 +212,17 @@ jobs:
           cd kernel
           echo "Building kernel (this may take 30-60 minutes)..."
           
+          # Determine compiler
+          if [ -f "$CLANG_PATH/clang" ]; then
+            CC="$CLANG_PATH/clang"
+          else
+            CC="clang"
+          fi
+          
           make ARCH=${{ env.ARCH }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            CC=clang \
+            CC="$CC" \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             -j$(nproc) \
             2>&1 | tee build.log
