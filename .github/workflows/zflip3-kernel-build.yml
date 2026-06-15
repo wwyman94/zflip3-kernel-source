@@ -28,102 +28,50 @@ jobs:
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update
-          sudo apt-get install -y \
-            build-essential \
-            gcc-aarch64-linux-gnu \
-            bc \
-            bison \
-            flex \
-            libssl-dev \
-            libelf-dev \
-            python3 \
-            python3-pip \
-            curl \
-            cpio \
-            rsync \
-            zip \
-            unzip \
-            dwarves \
-            git \
-            libncurses5-dev \
-            libncursesw5-dev \
-            xz-utils \
-            zstd \
-            clang \
-            lld \
-            llvm
+          sudo apt-get install -y build-essential gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev python3 python3-pip curl cpio rsync zip unzip dwarves git libncurses5-dev libncursesw5-dev xz-utils zstd clang lld llvm
 
       - name: Setup AOSP Clang
         run: |
           mkdir -p /opt/toolchains
           cd /opt/toolchains
           
-          echo "Downloading AOSP Clang r450784d (Android 13)..."
+          echo "Downloading AOSP Clang r450784d..."
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r450784d.git clang
           
-          CLANG_BIN="/opt/toolchains/clang/bin"
-          echo "CLANG_PATH=$CLANG_BIN" >> $GITHUB_ENV
-          echo "PATH=$CLANG_BIN:$PATH" >> $GITHUB_ENV
-          
-          # Use AOSP binutils for DWARF compatibility
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-64
           git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc-32
           
+          echo "CLANG_PATH=/opt/toolchains/clang/bin" >> $GITHUB_ENV
           echo "CROSS_COMPILE=/opt/toolchains/gcc-64/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
           echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc-32/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
           
-          $CLANG_BIN/clang --version
+          /opt/toolchains/clang/bin/clang --version
 
       - name: Clone kernel source
         run: |
-          echo "Cloning kernel source from $KERNEL_SOURCE..."
           git clone --depth=1 https://github.com/${{ env.KERNEL_SOURCE }}.git kernel
           cd kernel
           
-          # Fix script permissions
-          echo "Fixing script permissions..."
           chmod +x scripts/*.sh 2>/dev/null || true
           chmod +x scripts/basic/fixdep 2>/dev/null || true
           chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           
-          # Disable problematic VDSO sigtramp
           echo "Patching signal.c to disable VDSO sigtramp..."
-          cat > signal_patch.diff << 'PATCH'
---- a/arch/arm64/kernel/signal.c
-+++ b/arch/arm64/kernel/signal.c
-@@ -734,7 +734,11 @@ static void setup_return(struct pt_regs *regs, struct k_sigaction *ka,
- 	if (ka->sa.sa_flags & SA_RESTORER)
- 		sigtramp = ka->sa.sa_restorer;
- 	else
-+#ifdef CONFIG_GENERIC_COMPAT_VDSO
- 		sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp);
-+#else
-+		sigtramp = NULL;
-+#endif
- #else
- 	sigtramp = &default_rt_sigreturn;
- #endif
-PATCH
-          patch -p1 < signal_patch.diff || echo "Patch may already be applied or file different"
+          sed -i 's/sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp);/sigtramp = NULL; \/\/ Disabled VDSO/' arch/arm64/kernel/signal.c
           
           echo "Kernel version: $(make kernelversion)"
-          echo "Files: $(find . -type f | wc -l)"
 
       - name: Integrate KernelSU
         run: |
           cd kernel
-          echo "Cloning KernelSU (branch: ${{ inputs.kernelsu_version }})..."
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
           
-          echo "KernelSU files added:"
-          find drivers/kernelsu -type f 2>/dev/null | head -10 || echo "drivers/kernelsu not found"
+          find drivers/kernelsu -type f 2>/dev/null | head -5 || echo "KernelSU integrated"
 
       - name: Enable DroidSpaces kernel options
         if: inputs.add_droidspaces == 'true'
         run: |
           cd kernel
-          echo "Creating DroidSpaces config fragment..."
-          
           cat > arch/arm64/configs/droidspaces.config << 'EOF'
           CONFIG_SYSVIPC=y
           CONFIG_POSIX_MQUEUE=y
@@ -138,83 +86,32 @@ PATCH
           CONFIG_CGROUP_DEVICE=y
           CONFIG_CGROUP_PIDS=y
           CONFIG_MEMCG=y
-          CONFIG_NETFILTER_XT_MATCH_ADDRTYPE=y
-          CONFIG_NETFILTER_XT_TARGET_REJECT=y
-          CONFIG_NETFILTER_XT_TARGET_LOG=y
-          CONFIG_NETFILTER_XT_MATCH_RECENT=y
-          CONFIG_IP_SET=y
-          CONFIG_IP_SET_HASH_IP=y
-          CONFIG_IP_SET_HASH_NET=y
-          CONFIG_NETFILTER_XT_SET=y
-          CONFIG_TMPFS_XATTR=y
           CONFIG_VETH=y
           CONFIG_ANDROID_BINDER_IPC=y
           CONFIG_ANDROID_BINDERFS=y
-          # Disable VDSO to avoid sigtramp issues
-          CONFIG_GENERIC_COMPAT_VDSO=n
-          CONFIG_CROSS_COMPILE_COMPAT_VDSO=""
           EOF
-          
-          echo "DroidSpaces config fragment created"
 
       - name: Make defconfig
         run: |
           cd kernel
-          echo "Generating kernel config..."
           
-          # Use AOSP Clang
-          CC="/opt/toolchains/clang/bin/clang"
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CC=/opt/toolchains/clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu- vendor/b2q_chn_openx_defconfig
           
-          # First generate base config
-          make ARCH=${{ env.ARCH }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CC="$CC" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            vendor/b2q_chn_openx_defconfig
-          
-          # Merge DroidSpaces config if enabled
           if [ "${{ inputs.add_droidspaces }}" == "true" ] && [ -f arch/arm64/configs/droidspaces.config ]; then
-            echo "Merging DroidSpaces config..."
-            ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/droidspaces.config 2>/dev/null || \
-            {
-              echo "Using fallback config method..."
-              cat arch/arm64/configs/droidspaces.config >> .config
-              make ARCH=${{ env.ARCH }} olddefconfig
-            }
+            ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/droidspaces.config || cat arch/arm64/configs/droidspaces.config >> .config
+            make ARCH=${{ env.ARCH }} olddefconfig
           fi
-          
-          echo "Verifying KernelSU config..."
-          grep "KSU" .config || echo "KSU not found in config"
-          echo "Verifying VDSO disabled..."
-          grep "COMPAT_VDSO" .config || echo "VDSO config checked"
 
       - name: Build kernel
         run: |
           cd kernel
-          echo "Building kernel..."
           
-          CC="/opt/toolchains/clang/bin/clang"
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} CC=/opt/toolchains/clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
           
-          make ARCH=${{ env.ARCH }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
-            CC="$CC" \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            -j$(nproc) \
-            2>&1 | tee build.log
-          
-          echo "Build exit code: $?"
-          
-          # Check output
           if [ -f arch/arm64/boot/Image.gz ]; then
-            echo "✅ Image.gz built!"
-            ls -la arch/arm64/boot/Image.gz
-          elif [ -f arch/arm64/boot/Image.gz-dtb ]; then
-            echo "✅ Image.gz-dtb built!"
-            ls -la arch/arm64/boot/Image.gz-dtb
+            echo "Image.gz built!"
           elif [ -f arch/arm64/boot/Image ]; then
-            echo "✅ Image built!"
-            ls -la arch/arm64/boot/Image
+            echo "Image built!"
           fi
 
       - name: Package kernel
@@ -230,24 +127,17 @@ PATCH
             KERNEL_IMG="arch/arm64/boot/Image"
           fi
           
-          if [ -z "$KERNEL_IMG" ]; then
-            echo "No kernel image found!"
+          if [ -n "$KERNEL_IMG" ]; then
+            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+            cp "$KERNEL_IMG" AnyKernel3/
+            cd AnyKernel3
+            zip -r9 ../zflip3-kernelsu-droidspaces.zip ./*
+            cd ..
+            ls -la zflip3-kernelsu-droidspaces.zip
+          else
+            echo "No kernel image found"
             exit 1
           fi
-          
-          echo "Kernel image: $KERNEL_IMG"
-          
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-          cp "$KERNEL_IMG" AnyKernel3/
-          
-          cd AnyKernel3
-          sed -i 's/kernel.string=.*/kernel.string=Z Flip 3 KernelSU+DroidSpaces/' tools/ak3-core.sh 2>/dev/null || true
-          
-          zip -r9 ../zflip3-kernelsu-droidspaces.zip ./*
-          cd ..
-          
-          echo "✅ Kernel packaged!"
-          ls -la zflip3-kernelsu-droidspaces.zip
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
