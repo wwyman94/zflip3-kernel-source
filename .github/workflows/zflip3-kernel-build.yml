@@ -30,55 +30,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential gcc-aarch64-linux-gnu bc bison flex libssl-dev libelf-dev python3 python3-pip curl cpio rsync zip unzip dwarves git libncurses5-dev libncursesw5-dev xz-utils zstd clang lld llvm
 
-      - name: Setup AOSP Clang
+      - name: Setup toolchains
         run: |
           mkdir -p /opt/toolchains
           cd /opt/toolchains
           
-          echo "Downloading AOSP Clang r450784d..."
-          # Try multiple mirrors
-          curl -L -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784d.tar.gz" 2>/dev/null || \
-          curl -L -o clang.tar.gz "https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r450784d/archive/refs/heads/main.tar.gz" || \
-          curl -L -o clang.tar.gz "https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r487747c/archive/refs/heads/main.tar.gz"
+          echo "Setting up system Clang..."
+          mkdir -p clang/bin
+          ln -sf $(which clang) clang/bin/clang
+          ln -sf $(which clang++) clang/bin/clang++
+          ln -sf $(which llvm-ar) clang/bin/llvm-ar
+          ln -sf $(which llvm-strip) clang/bin/llvm-strip
           
-          mkdir -p clang
-          tar -xzf clang.tar.gz -C clang --strip-components=1 2>/dev/null || true
-          
-          # Fallback: use system clang
-          if [ ! -f "clang/bin/clang" ]; then
-            echo "Using system clang..."
-            mkdir -p clang/bin
-            ln -sf $(which clang) clang/bin/clang
-            ln -sf $(which clang++) clang/bin/clang++
-            ln -sf $(which llvm-ar) clang/bin/llvm-ar
-            ln -sf $(which llvm-strip) clang/bin/llvm-strip
-          fi
-          
-          # Download GCC
-          echo "Downloading AOSP GCC..."
-          curl -L -o gcc64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" 2>/dev/null || \
-          curl -L -o gcc64.tar.gz "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/main.tar.gz"
-          
-          mkdir -p gcc-64
-          tar -xzf gcc64.tar.gz -C gcc-64 --strip-components=1 2>/dev/null || true
-          
-          curl -L -o gcc32.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz" 2>/dev/null || \
-          curl -L -o gcc32.tar.gz "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/main.tar.gz"
-          
-          mkdir -p gcc-32
-          tar -xzf gcc32.tar.gz -C gcc-32 --strip-components=1 2>/dev/null || true
-          
-          # Setup env
           echo "CLANG_PATH=/opt/toolchains/clang/bin" >> $GITHUB_ENV
-          if [ -f "gcc-64/bin/aarch64-linux-android-4.9-gcc" ]; then
-            echo "CROSS_COMPILE=/opt/toolchains/gcc-64/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
-            echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc-32/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
-          else
-            echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
-          fi
+          echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
           
-          /opt/toolchains/clang/bin/clang --version || clang --version
+          clang --version
 
       - name: Clone kernel source
         run: |
@@ -125,7 +93,7 @@ jobs:
         run: |
           cd kernel
           
-          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CC=/opt/toolchains/clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu- vendor/b2q_chn_openx_defconfig
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CC=clang CLANG_TRIPLE=aarch64-linux-gnu- vendor/b2q_chn_openx_defconfig
           
           if [ "${{ inputs.add_droidspaces }}" == "true" ] && [ -f arch/arm64/configs/droidspaces.config ]; then
             ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/droidspaces.config || cat arch/arm64/configs/droidspaces.config >> .config
@@ -135,13 +103,26 @@ jobs:
       - name: Build kernel
         run: |
           cd kernel
+          echo "Starting kernel build..."
           
-          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} CC=/opt/toolchains/clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
+          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} CC=clang CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
+          
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "Build exit code: $BUILD_STATUS"
+          
+          echo ""
+          echo "=== Checking for kernel images ==="
+          ls -la arch/arm64/boot/ 2>/dev/null || echo "boot directory not found"
           
           if [ -f arch/arm64/boot/Image.gz ]; then
-            echo "Image.gz built!"
+            echo "Image.gz found!"
           elif [ -f arch/arm64/boot/Image ]; then
-            echo "Image built!"
+            echo "Image found!"
+          else
+            echo "No kernel image found!"
+            echo "Last 100 lines of build log:"
+            tail -100 build.log
+            exit 1
           fi
 
       - name: Package kernel
@@ -157,17 +138,19 @@ jobs:
             KERNEL_IMG="arch/arm64/boot/Image"
           fi
           
-          if [ -n "$KERNEL_IMG" ]; then
-            git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
-            cp "$KERNEL_IMG" AnyKernel3/
-            cd AnyKernel3
-            zip -r9 ../zflip3-kernelsu-droidspaces.zip ./*
-            cd ..
-            ls -la zflip3-kernelsu-droidspaces.zip
-          else
-            echo "No kernel image found"
+          if [ -z "$KERNEL_IMG" ]; then
+            echo "No kernel image found!"
             exit 1
           fi
+          
+          echo "Kernel image: $KERNEL_IMG"
+          
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git AnyKernel3
+          cp "$KERNEL_IMG" AnyKernel3/
+          cd AnyKernel3
+          zip -r9 ../zflip3-kernelsu-droidspaces.zip ./*
+          cd ..
+          ls -la zflip3-kernelsu-droidspaces.zip
 
       - name: Upload kernel artifact
         uses: actions/upload-artifact@v4
