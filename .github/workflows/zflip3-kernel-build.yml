@@ -1,14 +1,12 @@
 name: Build Z Flip 3 Kernel v15
 
 on:
-  workflow_dispatch:
-    inputs:
-      kernelsu_version:
-        description: 'KernelSU branch/tag (e.g. main, v0.9.0)'
-        required: false
-        default: 'main'
+  push:
+    branches:
+      - main
 
 env:
+  KERNELSU_VERSION: main
   ARCH: arm64
   DEFCONFIG: vendor/b2q_chn_openx_defconfig
 
@@ -45,7 +43,7 @@ jobs:
       - name: Integrate KernelSU
         run: |
           cd kernel
-          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
+          curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s main
           echo "KernelSU integrated"
 
       - name: Make defconfig
