@@ -1,4 +1,4 @@
-name: Build Z Flip 3 Kernel v12
+name: Build Z Flip 3 Kernel v13
 
 on:
   workflow_dispatch:
@@ -85,33 +85,45 @@ CONFIG_ANDROID_BINDERFS=y
 EOF
           make ARCH=${{ env.ARCH }} olddefconfig
 
-      - name: Pre-build ftrace setup
+      - name: Fix WALT trace header issue
         run: |
           cd kernel
           
-          # Generate trace headers before main build
-          # This creates kernel/sched/walt/trace.h if needed
-          make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CC=clang CLANG_TRIPLE=aarch64-linux-gnu- headers_install
+          echo "=== Fixing WALT trace header issue ==="
           
-          # Check if walt trace.h exists, if not create stub
-          if [ ! -f kernel/sched/walt/trace.h ]; then
-            echo "Creating stub trace.h for walt..."
-            mkdir -p kernel/sched/walt
-            cat > kernel/sched/walt/trace.h << 'TRACEHDR'
-#ifndef WALT_TRACE_H
-#define WALT_TRACE_H
-
-#include <trace/define_trace.h>
-
-#define TRACE_INCLUDE_FILE
-#undef TRACE_SYSTEM
-#define TRACE_SYSTEM walt
-
-#endif /* WALT_TRACE_H */
-TRACEHDR
+          # The WALT trace files have broken ftrace header setup
+          # Solution: Add TRACE_INCLUDE_PATH before include of define_trace.h
+          
+          if [ -f kernel/sched/walt/trace.h ]; then
+            echo "Patching kernel/sched/walt/trace.h..."
+            
+            # Add TRACE_INCLUDE_PATH and TRACE_INCLUDE_FILE before define_trace.h
+            # TRACE_INCLUDE_PATH should be relative to include/trace/
+            # For kernel/sched/walt/trace.h, it should be ../../kernel/sched/walt
+            sed -i 's|#include <trace/define_trace.h>|#define TRACE_INCLUDE_PATH ../../kernel/sched/walt\n#define TRACE_INCLUDE_FILE trace\n#include <trace/define_trace.h>|' kernel/sched/walt/trace.h
+            
+            echo "Patched kernel/sched/walt/trace.h"
           fi
           
-          ls -la kernel/sched/walt/trace.h 2>/dev/null || echo "trace.h not found"
+          # Also need to create the trace event header in include/trace/events/
+          mkdir -p include/trace/events
+          
+          # Check if walt.h already exists in events
+          if [ ! -f include/trace/events/walt.h ]; then
+            echo "Creating include/trace/events/walt.h..."
+            cat > include/trace/events/walt.h << 'EOF'
+#ifndef _TRACE_WALT_H
+#define _TRACE_WALT_H
+
+#include <linux/tracepoint.h>
+
+/* WALT trace events - stub to allow compilation */
+
+#endif /* _TRACE_WALT_H */
+EOF
+          fi
+          
+          echo "Trace header fix complete."
 
       - name: Build kernel
         run: |
