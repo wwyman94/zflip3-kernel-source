@@ -66,53 +66,59 @@ jobs:
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
 
-      - name: Enable DroidSpaces kernel options
-        if: inputs.add_droidspaces == 'true'
-        run: |
-          cd kernel
-          cat > arch/arm64/configs/droidspaces.config << 'EOF'
-          CONFIG_SYSVIPC=y
-          CONFIG_POSIX_MQUEUE=y
-          CONFIG_NAMESPACES=y
-          CONFIG_PID_NS=y
-          CONFIG_IPC_NS=y
-          CONFIG_UTS_NS=y
-          CONFIG_USER_NS=y
-          CONFIG_DEVTMPFS=y
-          CONFIG_DEVTMPFS_MOUNT=y
-          CONFIG_CGROUPS=y
-          CONFIG_CGROUP_DEVICE=y
-          CONFIG_CGROUP_PIDS=y
-          CONFIG_MEMCG=y
-          CONFIG_VETH=y
-          CONFIG_ANDROID_BINDER_IPC=y
-          CONFIG_ANDROID_BINDERFS=y
-          EOF
-
       - name: Make defconfig
         run: |
           cd kernel
           
+          # First make the base defconfig
           make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CC=clang CLANG_TRIPLE=aarch64-linux-gnu- vendor/b2q_chn_openx_defconfig
+
+      - name: Enable DroidSpaces kernel options
+        if: inputs.add_droidspaces == 'true'
+        run: |
+          cd kernel
+          # Enable DroidSpaces options directly in .config
+          echo "CONFIG_SYSVIPC=y" >> .config
+          echo "CONFIG_POSIX_MQUEUE=y" >> .config
+          echo "CONFIG_NAMESPACES=y" >> .config
+          echo "CONFIG_PID_NS=y" >> .config
+          echo "CONFIG_IPC_NS=y" >> .config
+          echo "CONFIG_UTS_NS=y" >> .config
+          echo "CONFIG_USER_NS=y" >> .config
+          echo "CONFIG_DEVTMPFS=y" >> .config
+          echo "CONFIG_DEVTMPFS_MOUNT=y" >> .config
+          echo "CONFIG_CGROUPS=y" >> .config
+          echo "CONFIG_CGROUP_DEVICE=y" >> .config
+          echo "CONFIG_CGROUP_PIDS=y" >> .config
+          echo "CONFIG_MEMCG=y" >> .config
+          echo "CONFIG_VETH=y" >> .config
+          echo "CONFIG_ANDROID_BINDER_IPC=y" >> .config
+          echo "CONFIG_ANDROID_BINDERFS=y" >> .config
           
-          if [ "${{ inputs.add_droidspaces }}" == "true" ] && [ -f arch/arm64/configs/droidspaces.config ]; then
-            ./scripts/kconfig/merge_config.sh -m .config arch/arm64/configs/droidspaces.config || cat arch/arm64/configs/droidspaces.config >> .config
-            make ARCH=${{ env.ARCH }} olddefconfig
-          fi
+          # Update config with new options
+          make ARCH=${{ env.ARCH }} olddefconfig
 
       - name: Build kernel
         run: |
           cd kernel
           echo "Starting kernel build..."
           
+          # Build with proper error handling
+          set -o pipefail
           make ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} CC=clang CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc) 2>&1 | tee build.log
           
-          BUILD_STATUS=${PIPESTATUS[0]}
+          BUILD_STATUS=$?
           echo "Build exit code: $BUILD_STATUS"
           
           echo ""
           echo "=== Checking for kernel images ==="
           ls -la arch/arm64/boot/ 2>/dev/null || echo "boot directory not found"
+          
+          if [ $BUILD_STATUS -ne 0 ]; then
+            echo "Build failed!"
+            tail -200 build.log
+            exit 1
+          fi
           
           if [ -f arch/arm64/boot/Image.gz ]; then
             echo "Image.gz found!"
@@ -120,7 +126,6 @@ jobs:
             echo "Image found!"
           else
             echo "No kernel image found!"
-            echo "Last 100 lines of build log:"
             tail -100 build.log
             exit 1
           fi
