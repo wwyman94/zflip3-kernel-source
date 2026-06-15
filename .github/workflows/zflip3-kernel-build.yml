@@ -21,7 +21,6 @@ env:
   DEFCONFIG: vendor/b2q_chn_openx_defconfig
   ARCH: arm64
   CROSS_COMPILE: aarch64-linux-gnu-
-  CLANG_VERSION: r383902
 
 jobs:
   build:
@@ -29,11 +28,11 @@ jobs:
     steps:
       - name: Install dependencies
         run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y \
             build-essential \
             gcc-aarch64-linux-gnu \
-            gcc-aarch64-linux-gnu-8 \
             bc \
             bison \
             flex \
@@ -47,30 +46,47 @@ jobs:
             zip \
             unzip \
             dwarves \
-            git
+            git \
+            libncurses5-dev \
+            libncursesw5-dev \
+            xz-utils \
+            zstd
 
       - name: Setup Clang toolchain
         run: |
-          echo "Downloading AOSP Clang $CLANG_VERSION..."
-          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/clang-${CLANG_VERSION}.tar.gz" -o clang.tar.gz
-          mkdir -p /opt/clang
-          tar -xf clang.tar.gz -C /opt/clang
-          echo "PATH=/opt/clang/bin:$PATH" >> $GITHUB_ENV
-          ls /opt/clang/bin/ | head -5
+          echo "Downloading AOSP Clang..."
+          mkdir -p /opt/toolchains
+          cd /opt/toolchains
+          
+          # Download AOSP Clang 17.0.2 (r487747c)
+          curl -L "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r487747c.tar.gz" -o clang.tar.gz
+          tar -xf clang.tar.gz
+          rm clang.tar.gz
+          
+          CLANG_DIR=$(ls -d clang* 2>/dev/null | head -1)
+          echo "CLANG_PATH=/opt/toolchains/$CLANG_DIR/bin" >> $GITHUB_ENV
+          echo "PATH=/opt/toolchains/$CLANG_DIR/bin:$PATH" >> $GITHUB_ENV
+          
+          clang --version
 
       - name: Setup GCC cross-compiler
         run: |
           echo "Downloading AOSP GCC 4.9..."
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz" -o gcc-aarch64.tar.gz
-          mkdir -p /opt/gcc/aarch64
-          tar -xf gcc-aarch64.tar.gz -C /opt/gcc/aarch64
+          mkdir -p /opt/toolchains/gcc
+          cd /opt/toolchains/gcc
           
-          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/master.tar.gz" -o gcc-arm.tar.gz
-          mkdir -p /opt/gcc/arm
-          tar -xf gcc-arm.tar.gz -C /opt/gcc/arm
+          # Download AOSP GCC 4.9 for aarch64
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" -o gcc-aarch64.tar.gz
+          tar -xf gcc-aarch64.tar.gz
+          rm gcc-aarch64.tar.gz
           
-          echo "CROSS_COMPILE=/opt/gcc/aarch64/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=/opt/gcc/arm/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
+          # Download AOSP GCC 4.9 for arm32
+          curl -L "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz" -o gcc-arm.tar.gz
+          tar -xf gcc-arm.tar.gz
+          rm gcc-arm.tar.gz
+          
+          echo "CROSS_COMPILE=/opt/toolchains/gcc/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
 
       - name: Clone kernel source
         run: |
