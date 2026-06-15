@@ -1,4 +1,4 @@
-name: Build Z Flip 3 Kernel v13
+name: Build Z Flip 3 Kernel v14
 
 on:
   workflow_dispatch:
@@ -64,7 +64,6 @@ jobs:
       - name: Enable kernel options
         run: |
           cd kernel
-          # Enable essential kernel options
           cat >> .config << 'EOF'
 CONFIG_SYSVIPC=y
 CONFIG_POSIX_MQUEUE=y
@@ -85,45 +84,60 @@ CONFIG_ANDROID_BINDERFS=y
 EOF
           make ARCH=${{ env.ARCH }} olddefconfig
 
-      - name: Fix WALT trace header issue
+      - name: Fix ftrace trace.h - CREATE SYMLINK
         run: |
           cd kernel
           
-          echo "=== Fixing WALT trace header issue ==="
+          echo "=== Fixing ftrace trace.h issue ==="
           
-          # The WALT trace files have broken ftrace header setup
-          # Solution: Add TRACE_INCLUDE_PATH before include of define_trace.h
+          # The ftrace system expects include/trace/trace.h to exist
+          # kernel/sched/walt/trace.c includes <trace/define_trace.h>
+          # define_trace.h then tries to include ./trace.h (relative to include/trace/)
+          # So we need include/trace/trace.h -> kernel/sched/walt/trace.h
           
-          if [ -f kernel/sched/walt/trace.h ]; then
-            echo "Patching kernel/sched/walt/trace.h..."
-            
-            # Add TRACE_INCLUDE_PATH and TRACE_INCLUDE_FILE before define_trace.h
-            # TRACE_INCLUDE_PATH should be relative to include/trace/
-            # For kernel/sched/walt/trace.h, it should be ../../kernel/sched/walt
-            sed -i 's|#include <trace/define_trace.h>|#define TRACE_INCLUDE_PATH ../../kernel/sched/walt\n#define TRACE_INCLUDE_FILE trace\n#include <trace/define_trace.h>|' kernel/sched/walt/trace.h
-            
-            echo "Patched kernel/sched/walt/trace.h"
-          fi
+          mkdir -p include/trace
           
-          # Also need to create the trace event header in include/trace/events/
+          # Check the actual include statement in define_trace.h
+          echo "Checking include/trace/define_trace.h:"
+          grep -n 'trace.h\|INCLUDE\|PATH\|FILE' include/trace/define_trace.h | head -20 || true
+          
+          # The define_trace.h uses: #include TRACE_INCLUDE_FILE
+          # or: #include TRACE_INCLUDE_PATH/TRACE_INCLUDE_FILE
+          # We need to make sure include/trace/trace.h points to the right place
+          
+          # Create symlink: include/trace/trace.h -> kernel/sched/walt/trace.h
+          ln -sf ../../kernel/sched/walt/trace.h include/trace/trace.h
+          
+          echo "Created symlink: include/trace/trace.h -> ../../kernel/sched/walt/trace.h"
+          ls -la include/trace/trace.h
+          
+          # Also create include/trace/events/walt.h stub
           mkdir -p include/trace/events
-          
-          # Check if walt.h already exists in events
           if [ ! -f include/trace/events/walt.h ]; then
-            echo "Creating include/trace/events/walt.h..."
-            cat > include/trace/events/walt.h << 'EOF'
-#ifndef _TRACE_WALT_H
-#define _TRACE_WALT_H
+            cat > include/trace/events/walt.h << 'WALTHEADER'
+#ifndef _TRACE_EVENTS_WALT_H
+#define _TRACE_EVENTS_WALT_H
 
 #include <linux/tracepoint.h>
 
-/* WALT trace events - stub to allow compilation */
+TRACE_EVENT(walt_task_sleep,
+    TP_PROTO(struct task_struct *p),
+    TP_ARGS(p),
+    TP_STRUCT__entry(
+        __array(char, comm, TASK_COMM_LEN)
+        __field(pid_t, pid)
+    ),
+    TP_fast_assign(
+        memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
+        __entry->pid = p->pid;
+    ),
+    TP_printk("task: %s (%d)", __entry->comm, __entry->pid)
+)
 
-#endif /* _TRACE_WALT_H */
-EOF
+#endif /* _TRACE_EVENTS_WALT_H */
+WALTHEADER
+            echo "Created include/trace/events/walt.h stub"
           fi
-          
-          echo "Trace header fix complete."
 
       - name: Build kernel
         run: |
@@ -132,7 +146,6 @@ EOF
           
           set -o pipefail
           
-          # Build with proper error handling
           make ARCH=${{ env.ARCH }} \
             CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} \
@@ -145,12 +158,13 @@ EOF
           
           echo ""
           echo "=== Checking for kernel images ==="
-          ls -la arch/arm64/boot/ 2>/dev/null || echo "boot directory not found"
+          ls -la arch/arm64/boot/ 2>/dev/null || echo "boot dir not found"
           find arch/arm64/boot -name "Image*" -type f 2>/dev/null || echo "No Image found"
+          find . -name "*.ko" 2>/dev/null | head -5 || echo "No modules found"
           
           if [ $BUILD_STATUS -ne 0 ]; then
             echo "Build failed!"
-            tail -100 build.log
+            tail -200 build.log
             exit 1
           fi
           
@@ -189,7 +203,7 @@ EOF
         uses: actions/upload-artifact@v4
         with:
           name: zflip3-kernelsu
-          path: kernel/zflip3-kernelsu.zip
+          path: zflip3-kernelsu.zip
           retention-days: 30
 
       - name: Upload build log
