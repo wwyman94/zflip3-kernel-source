@@ -36,16 +36,49 @@ jobs:
           cd /opt/toolchains
           
           echo "Downloading AOSP Clang r450784d..."
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r450784d.git clang
+          # Try multiple mirrors
+          curl -L -o clang.tar.gz "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r450784d.tar.gz" 2>/dev/null || \
+          curl -L -o clang.tar.gz "https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r450784d/archive/refs/heads/main.tar.gz" || \
+          curl -L -o clang.tar.gz "https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86_clang-r487747c/archive/refs/heads/main.tar.gz"
           
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git gcc-64
-          git clone --depth=1 https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git gcc-32
+          mkdir -p clang
+          tar -xzf clang.tar.gz -C clang --strip-components=1 2>/dev/null || true
           
+          # Fallback: use system clang
+          if [ ! -f "clang/bin/clang" ]; then
+            echo "Using system clang..."
+            mkdir -p clang/bin
+            ln -sf $(which clang) clang/bin/clang
+            ln -sf $(which clang++) clang/bin/clang++
+            ln -sf $(which llvm-ar) clang/bin/llvm-ar
+            ln -sf $(which llvm-strip) clang/bin/llvm-strip
+          fi
+          
+          # Download GCC
+          echo "Downloading AOSP GCC..."
+          curl -L -o gcc64.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/main.tar.gz" 2>/dev/null || \
+          curl -L -o gcc64.tar.gz "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/archive/refs/heads/main.tar.gz"
+          
+          mkdir -p gcc-64
+          tar -xzf gcc64.tar.gz -C gcc-64 --strip-components=1 2>/dev/null || true
+          
+          curl -L -o gcc32.tar.gz "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9/+archive/refs/heads/main.tar.gz" 2>/dev/null || \
+          curl -L -o gcc32.tar.gz "https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9/archive/refs/heads/main.tar.gz"
+          
+          mkdir -p gcc-32
+          tar -xzf gcc32.tar.gz -C gcc-32 --strip-components=1 2>/dev/null || true
+          
+          # Setup env
           echo "CLANG_PATH=/opt/toolchains/clang/bin" >> $GITHUB_ENV
-          echo "CROSS_COMPILE=/opt/toolchains/gcc-64/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc-32/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
+          if [ -f "gcc-64/bin/aarch64-linux-android-4.9-gcc" ]; then
+            echo "CROSS_COMPILE=/opt/toolchains/gcc-64/bin/aarch64-linux-android-4.9-" >> $GITHUB_ENV
+            echo "CROSS_COMPILE_ARM32=/opt/toolchains/gcc-32/bin/arm-linux-androideabi-4.9-" >> $GITHUB_ENV
+          else
+            echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+            echo "CROSS_COMPILE_ARM32=arm-linux-gnueabi-" >> $GITHUB_ENV
+          fi
           
-          /opt/toolchains/clang/bin/clang --version
+          /opt/toolchains/clang/bin/clang --version || clang --version
 
       - name: Clone kernel source
         run: |
@@ -54,7 +87,6 @@ jobs:
           
           chmod +x scripts/*.sh 2>/dev/null || true
           chmod +x scripts/basic/fixdep 2>/dev/null || true
-          chmod +x scripts/kconfig/merge_config.sh 2>/dev/null || true
           
           echo "Patching signal.c to disable VDSO sigtramp..."
           sed -i 's/sigtramp = VDSO_SYMBOL(current->mm->context.vdso, sigtramp);/sigtramp = NULL; \/\/ Disabled VDSO/' arch/arm64/kernel/signal.c
@@ -65,8 +97,6 @@ jobs:
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s "${{ inputs.kernelsu_version }}"
-          
-          find drivers/kernelsu -type f 2>/dev/null | head -5 || echo "KernelSU integrated"
 
       - name: Enable DroidSpaces kernel options
         if: inputs.add_droidspaces == 'true'
